@@ -18,6 +18,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
   late final RecordController _controller;
   final AuthController _authController = Get.find<AuthController>();
   bool _isEditing = false;
+  int _gridVersion = 0;
 
   @override
   void initState() {
@@ -195,6 +196,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
 
   void _showAddColumnDialog() async {
     final nameController = TextEditingController();
+    final formulaController = TextEditingController();
     ColumnType selectedType = ColumnType.text;
 
     await Get.dialog(
@@ -202,30 +204,104 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         title: const Text('Add New Column'),
         content: StatefulBuilder(
           builder: (context, setState) {
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: 'Column Name'),
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<ColumnType>(
-                  value: selectedType,
-                  items: ColumnType.values
-                      .map(
-                        (type) => DropdownMenuItem(
-                          value: type,
-                          child: Text(type.name.toUpperCase()),
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Column Name'),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<ColumnType>(
+                    value: selectedType,
+                    items: ColumnType.values
+                        .map(
+                          (type) => DropdownMenuItem(
+                            value: type,
+                            child: Text(type.name.toUpperCase()),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (val) {
+                      if (val != null) setState(() => selectedType = val);
+                    },
+                    decoration: const InputDecoration(labelText: 'Type'),
+                  ),
+                  if (selectedType == ColumnType.formula) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Formula:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    TextField(
+                      controller: formulaController,
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. Purchase Price / 2',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Insert Variable:',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ...widget.form.columns
+                            .where((c) => c.type == ColumnType.number)
+                            .map(
+                              (c) => ActionChip(
+                                label: Text(c.name),
+                                onPressed: () {
+                                  final text = formulaController.text;
+                                  final selection = formulaController.selection;
+                                  final newText = text.replaceRange(
+                                    selection.start >= 0
+                                        ? selection.start
+                                        : text.length,
+                                    selection.end >= 0
+                                        ? selection.end
+                                        : text.length,
+                                    ' ${c.name} ',
+                                  );
+                                  formulaController.text = newText;
+                                },
+                              ),
+                            ),
+                        ActionChip(
+                          label: const Text('/'),
+                          onPressed: () {
+                            formulaController.text += ' / ';
+                          },
                         ),
-                      )
-                      .toList(),
-                  onChanged: (val) {
-                    if (val != null) setState(() => selectedType = val);
-                  },
-                  decoration: const InputDecoration(labelText: 'Type'),
-                ),
-              ],
+                        ActionChip(
+                          label: const Text('*'),
+                          onPressed: () {
+                            formulaController.text += ' * ';
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text('+'),
+                          onPressed: () {
+                            formulaController.text += ' + ';
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text('-'),
+                          onPressed: () {
+                            formulaController.text += ' - ';
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
             );
           },
         ),
@@ -244,26 +320,296 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                   return;
                 }
 
+                String? formula;
+                if (selectedType == ColumnType.formula) {
+                  if (formulaController.text.isEmpty) {
+                    Get.snackbar('Error', 'Please enter a formula');
+                    return;
+                  }
+                  formula = formulaController.text;
+                }
+
                 // Add column to form model
                 final newCol = ColumnModel(
                   formId: widget.form.id,
                   name: nameController.text,
                   type: selectedType,
+                  formula: formula,
                 );
 
-                // Save to DB (We need a method in controller/service for this really, but for now we do it here or pass to controller if method existed)
-                // Assuming we need to add it to database first.
-                // Since this requires schema migration or updates, let's use a new controller method.
-                // For this snippet, I will call a hypothetical or new method on controller.
                 await _controller.addColumn(newCol);
 
                 setState(() {
                   widget.form.columns.add(newCol);
+                  _gridVersion++; // Force rebuild
                 });
+
+                // Trigger formula update
+                // Give a small delay for PlutoGrid to rebuild with new column
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  _controller.recalculateAllRows();
+                });
+
                 Get.back();
               }
             },
             child: const Text('ADD'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showManageColumnsDialog() {
+    Get.dialog(
+      AlertDialog(
+        title: const Text('Manage Columns'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: StatefulBuilder(
+            builder: (context, setDtState) {
+              return ListView.builder(
+                shrinkWrap: true,
+                itemCount: widget.form.columns.length,
+                itemBuilder: (context, index) {
+                  final col = widget.form.columns[index];
+                  return ListTile(
+                    title: Text(col.name),
+                    subtitle: Text(col.type.name.toUpperCase()),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, color: Colors.blue),
+                          onPressed: () async {
+                            // Close manage dialog first or stack? Stack is fine.
+                            await _showEditColumnDialog(col);
+                            setDtState(() {}); // Refresh list
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () {
+                            Get.defaultDialog(
+                              title: 'Delete Column',
+                              middleText:
+                                  'Delete "${col.name}"? This cannot be undone.',
+                              textConfirm: 'DELETE',
+                              confirmTextColor: Colors.white,
+                              onConfirm: () async {
+                                Get.back(); // Close confirm dialog first
+
+                                // Ask for PIN
+                                final pinController = TextEditingController();
+                                final pinResult = await Get.dialog<bool>(
+                                  AlertDialog(
+                                    title: const Text('Enter PIN to Delete'),
+                                    content: TextField(
+                                      controller: pinController,
+                                      obscureText: true,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'PIN',
+                                      ),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Get.back(result: false),
+                                        child: const Text('CANCEL'),
+                                      ),
+                                      ElevatedButton(
+                                        onPressed: () async {
+                                          final isValid = await _authController
+                                              .verifyEditAction(
+                                                pinController.text,
+                                              );
+                                          Get.back(result: isValid);
+                                        },
+                                        child: const Text('VERIFY'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+
+                                if (pinResult == true) {
+                                  await _controller.deleteColumn(col.name);
+                                  setState(() {
+                                    widget.form.columns.removeAt(index);
+                                    _gridVersion++;
+                                  });
+                                  setDtState(() {});
+
+                                  // Trigger reload
+                                  _controller.recalculateAllRows();
+                                  Get.snackbar(
+                                    'Success',
+                                    'Column deleted successfully',
+                                  );
+                                } else if (pinResult == false) {
+                                  Get.snackbar(
+                                    'Error',
+                                    'Invalid PIN',
+                                    backgroundColor: Colors.red,
+                                    colorText: Colors.white,
+                                  );
+                                }
+                              },
+                              textCancel: 'CANCEL',
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Get.back(), child: const Text('CLOSE')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showEditColumnDialog(ColumnModel col) async {
+    final nameController = TextEditingController(text: col.name);
+    final formulaController = TextEditingController(text: col.formula ?? '');
+    ColumnType selectedType = col.type;
+    final oldName = col.name;
+
+    await Get.dialog(
+      AlertDialog(
+        title: const Text('Edit Column'),
+        content: StatefulBuilder(
+          builder: (context, setState) {
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Column Name'),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<ColumnType>(
+                    value: selectedType,
+                    items: ColumnType.values
+                        .map(
+                          (t) => DropdownMenuItem(
+                            value: t,
+                            child: Text(t.name.toUpperCase()),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (val) {
+                      if (val != null) setState(() => selectedType = val);
+                    },
+                    decoration: const InputDecoration(labelText: 'Type'),
+                  ),
+                  if (selectedType == ColumnType.formula) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Formula:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    TextField(
+                      controller: formulaController,
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. Price * Qty',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        ...widget.form.columns
+                            .where(
+                              (c) =>
+                                  c.type == ColumnType.number &&
+                                  c.name != oldName,
+                            )
+                            .map(
+                              (c) => ActionChip(
+                                label: Text(c.name),
+                                onPressed: () {
+                                  final text = formulaController.text;
+                                  final selection = formulaController.selection;
+                                  final newText = text.replaceRange(
+                                    selection.start >= 0
+                                        ? selection.start
+                                        : text.length,
+                                    selection.end >= 0
+                                        ? selection.end
+                                        : text.length,
+                                    ' ${c.name} ',
+                                  );
+                                  formulaController.text = newText;
+                                },
+                              ),
+                            ),
+                        ActionChip(
+                          label: const Text('/'),
+                          onPressed: () => formulaController.text += ' / ',
+                        ),
+                        ActionChip(
+                          label: const Text('*'),
+                          onPressed: () => formulaController.text += ' * ',
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(onPressed: () => Get.back(), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.isNotEmpty) {
+                // Check unique name only if changed
+                if (nameController.text != oldName &&
+                    widget.form.columns.any(
+                      (c) => c.name == nameController.text,
+                    )) {
+                  Get.snackbar('Error', 'Name already exists');
+                  return;
+                }
+
+                String? formula;
+                if (selectedType == ColumnType.formula)
+                  formula = formulaController.text;
+
+                final newCol = ColumnModel(
+                  formId: col.formId,
+                  name: nameController.text,
+                  type: selectedType,
+                  formula: formula,
+                );
+
+                await _controller.updateColumn(oldName, newCol);
+
+                setState(() {
+                  final idx = widget.form.columns.indexWhere(
+                    (c) => c.name == oldName,
+                  );
+                  if (idx != -1) widget.form.columns[idx] = newCol;
+                });
+
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  _controller.recalculateAllRows();
+                });
+
+                Get.back();
+              }
+            },
+            child: const Text('SAVE'),
           ),
         ],
       ),
@@ -297,6 +643,16 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
               ),
             ),
           const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: _showManageColumnsDialog,
+            icon: const Icon(Icons.settings),
+            label: const Text('MANAGE'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.purple,
+              foregroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 8),
           if (_isEditing)
             ElevatedButton.icon(
               onPressed: _showAddColumnDialog,
@@ -315,7 +671,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
           return const Center(child: CircularProgressIndicator());
         }
         return PlutoGrid(
-          key: ValueKey('grid_${widget.form.id}_$_isEditing'),
+          key: ValueKey('grid_${widget.form.id}_${_isEditing}_$_gridVersion'),
           columns: _buildColumns(),
           rows: _buildRows(),
           onChanged: (PlutoGridOnChangedEvent event) {
