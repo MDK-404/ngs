@@ -25,6 +25,8 @@ class ColumnModel {
   final String name;
   final ColumnType type;
   final String? formula;
+  final String? textColor;
+  final String? backgroundColor;
 
   ColumnModel({
     this.id,
@@ -32,6 +34,8 @@ class ColumnModel {
     required this.name,
     required this.type,
     this.formula,
+    this.textColor,
+    this.backgroundColor,
   });
 
   Map<String, dynamic> toMap() {
@@ -41,6 +45,8 @@ class ColumnModel {
       'name': name,
       'type': type.name,
       'formula': formula,
+      'text_color': textColor,
+      'background_color': backgroundColor,
     };
   }
 
@@ -51,6 +57,8 @@ class ColumnModel {
       name: map['name'],
       type: ColumnType.values.firstWhere((e) => e.name == map['type']),
       formula: map['formula'],
+      textColor: map['text_color'],
+      backgroundColor: map['background_color'],
     );
   }
 }

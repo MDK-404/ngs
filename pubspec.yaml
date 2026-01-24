@@ -45,6 +45,8 @@ dependencies:
   crypto: ^3.0.6
   path_provider: ^2.1.2
   sqlite3_flutter_libs: ^0.5.25
+  pdf: ^3.10.8
+  printing: ^5.11.1
 
 dev_dependencies:
   flutter_test:

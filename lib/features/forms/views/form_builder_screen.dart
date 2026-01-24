@@ -14,9 +14,10 @@ class _FormBuilderScreenState extends State<FormBuilderScreen> {
   final _formController = Get.find<FormController>();
   final _nameController = TextEditingController();
   final List<ColumnModel> _columns = [
-    ColumnModel(name: 'Name', type: ColumnType.text),
+    ColumnModel(name: 'Item Name', type: ColumnType.text),
     ColumnModel(name: 'Purchase Price', type: ColumnType.number),
-    ColumnModel(name: 'Retail Price', type: ColumnType.number),
+    ColumnModel(name: 'Wholesale ', type: ColumnType.number),
+    ColumnModel(name: 'Retail', type: ColumnType.number),
   ];
 
   void _addColumn() {
