@@ -123,67 +123,107 @@ class RecordController extends GetxController {
     }
   }
 
-  void recalculateFormulas(PlutoRow row) {
-    // 1. Prepare values map and name mapping
-    final values = <String, double>{};
-    final nameMapping = <String, String>{};
+  void recalculateFormulas(PlutoRow row, {String? excludeColumn}) {
+    int iterations = 0;
+    bool changed = true;
 
+    // Run up to 3 passes to resolve dependencies (e.g. Total -> Tax)
+    // regardless of column order.
+    while (changed && iterations < 3) {
+      changed = false;
+      iterations++;
+
+      // Refresh values from current row state
+      final values = _getRowValues(row);
+
+      final formulaColumns = form.columns
+          .where((c) => c.type == ColumnType.formula)
+          .toList();
+
+      for (var fCol in formulaColumns) {
+        // Skip if this column was the one manually edited
+        if (excludeColumn != null && fCol.name == excludeColumn) continue;
+
+        if (fCol.formula != null && fCol.formula!.isNotEmpty) {
+          final result = _evaluateExpression(fCol.formula!, values);
+          if (result != null) {
+            final finalVal = result.isFinite
+                ? result.toStringAsFixed(2)
+                : '0.00';
+            if (row.cells.containsKey(fCol.name) &&
+                row.cells[fCol.name]!.value.toString() != finalVal) {
+              stateManager.changeCellValue(
+                row.cells[fCol.name]!,
+                finalVal,
+                force: true,
+                callOnChangedEvent: false,
+              );
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Helper to parse cell input like "Price / 20"
+  String evaluateCellInput(PlutoRow row, String colName, String input) {
+    if (input.isEmpty) return input;
+
+    // Check if it looks like a formula (contains operators or starts with =)
+    if (!input.contains(RegExp(r'[+\-*/=]'))) return input;
+
+    String expression = input;
+    if (expression.startsWith('=')) expression = expression.substring(1);
+
+    final values = _getRowValues(row);
+    final result = _evaluateExpression(expression, values);
+
+    if (result != null && result.isFinite) {
+      return result.toStringAsFixed(2);
+    }
+
+    return input;
+  }
+
+  Map<String, double> _getRowValues(PlutoRow row) {
+    final values = <String, double>{};
     for (var col in form.columns) {
-      if (col.type == ColumnType.number) {
+      if (col.type == ColumnType.number || col.type == ColumnType.formula) {
         final val = row.cells[col.name]?.value;
         // Normalized key: remove spaces, use underscore
         final key = col.name.trim().replaceAll(RegExp(r'\s+'), '_');
         final doubleVal = double.tryParse(val?.toString() ?? '0') ?? 0.0;
-
         values[key] = doubleVal;
-
-        // Map original name (lowercase) to normalized key
-        nameMapping[col.name.trim().toLowerCase()] = key;
       }
     }
+    return values;
+  }
 
-    final formulaColumns = form.columns
-        .where((c) => c.type == ColumnType.formula)
-        .toList();
+  double? _evaluateExpression(String formula, Map<String, double> values) {
+    // Name mapping for case-insensitive replacement
+    final nameMapping = <String, String>{};
+    for (var col in form.columns) {
+      final key = col.name.trim().replaceAll(RegExp(r'\s+'), '_');
+      nameMapping[col.name.trim().toLowerCase()] = key;
+    }
 
-    for (var fCol in formulaColumns) {
-      if (fCol.formula != null && fCol.formula!.isNotEmpty) {
-        String currentFormula = fCol.formula!;
+    String currentFormula = formula;
 
-        // Sort names by length descending to match longest variables first
-        final sortedOriginalNames = nameMapping.keys.toList()
-          ..sort((a, b) => b.length.compareTo(a.length));
+    // Sort names by length descending
+    final sortedOriginalNames = nameMapping.keys.toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
 
-        for (var lowerName in sortedOriginalNames) {
-          final normalizedKey = nameMapping[lowerName]!;
+    for (var lowerName in sortedOriginalNames) {
+      final normalizedKey = nameMapping[lowerName]!;
+      final pattern = RegExp(RegExp.escape(lowerName), caseSensitive: false);
+      currentFormula = currentFormula.replaceAll(pattern, normalizedKey);
+    }
 
-          // Case-insensitive replacement
-          final pattern = RegExp(
-            RegExp.escape(lowerName),
-            caseSensitive: false,
-          );
-          currentFormula = currentFormula.replaceAll(pattern, normalizedKey);
-        }
-
-        print(
-          'Formula Evaluation: ${fCol.formula} -> $currentFormula | Values: $values',
-        );
-
-        final result = FormulaEngine.evaluate(currentFormula, values);
-
-        if (row.cells.containsKey(fCol.name)) {
-          final finalVal = result.isFinite ? result.toStringAsFixed(2) : '0.00';
-
-          if (row.cells[fCol.name]!.value.toString() != finalVal) {
-            stateManager.changeCellValue(
-              row.cells[fCol.name]!,
-              finalVal,
-              force: true,
-              callOnChangedEvent: false,
-            );
-          }
-        }
-      }
+    try {
+      return FormulaEngine.evaluate(currentFormula, values);
+    } catch (e) {
+      return null;
     }
   }
 }

@@ -44,11 +44,11 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
       final col = entry.value;
 
       PlutoColumnType type = PlutoColumnType.text();
-      if (col.type == ColumnType.number || col.type == ColumnType.formula) {
-        type = PlutoColumnType.number();
-      } else if (col.type == ColumnType.date) {
+      if (col.type == ColumnType.date) {
         type = PlutoColumnType.date();
       }
+      // For number, we NOW use text() to allow entering formulas like "=500/2" or "Price/2"
+      // PlutoColumnType.number() restricts to digits only.
 
       final isLocked = index == 0; // Lock the first user column
 
@@ -68,8 +68,8 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         title: col.name,
         field: col.name,
         type: type,
-        readOnly: col.type == ColumnType.formula || !_isEditing,
-        enableEditingMode: col.type != ColumnType.formula && _isEditing,
+        readOnly: !_isEditing,
+        enableEditingMode: _isEditing,
         frozen: isLocked ? PlutoColumnFrozen.start : PlutoColumnFrozen.none,
         enableColumnDrag: !isLocked,
         enableContextMenu: true, // Enable context menu
@@ -301,7 +301,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Insert Variable:',
+                      'Type numbers (e.g. / 100) or select variables:',
                       style: TextStyle(fontSize: 12),
                     ),
                     const SizedBox(height: 4),
@@ -352,6 +352,18 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                           label: const Text('-'),
                           onPressed: () {
                             formulaController.text += ' - ';
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text('('),
+                          onPressed: () {
+                            formulaController.text += ' ( ';
+                          },
+                        ),
+                        ActionChip(
+                          label: const Text(')'),
+                          onPressed: () {
+                            formulaController.text += ' ) ';
                           },
                         ),
                       ],
@@ -652,8 +664,14 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
+                    const Text(
+                      'Type numbers (e.g. / 100) or select variables:',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
                     Wrap(
                       spacing: 8,
+                      runSpacing: 8,
                       children: [
                         ...widget.form.columns
                             .where(
@@ -687,6 +705,22 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                         ActionChip(
                           label: const Text('*'),
                           onPressed: () => formulaController.text += ' * ',
+                        ),
+                        ActionChip(
+                          label: const Text('+'),
+                          onPressed: () => formulaController.text += ' + ',
+                        ),
+                        ActionChip(
+                          label: const Text('-'),
+                          onPressed: () => formulaController.text += ' - ',
+                        ),
+                        ActionChip(
+                          label: const Text('('),
+                          onPressed: () => formulaController.text += ' ( ',
+                        ),
+                        ActionChip(
+                          label: const Text(')'),
+                          onPressed: () => formulaController.text += ' ) ',
                         ),
                       ],
                     ),
@@ -1112,10 +1146,49 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
           columns: _buildColumns(),
           rows: _buildRows(),
           onChanged: (PlutoGridOnChangedEvent event) {
+            String? excludeColName;
+
+            // Intercept change to check for inline formula
+            if (event.column.field.isNotEmpty) {
+              final colModel = widget.form.columns.firstWhereOrNull(
+                (c) => c.name == event.column.field,
+              );
+
+              if (colModel != null) {
+                // Allow inline math for Number AND Formula columns
+                if (colModel.type == ColumnType.number ||
+                    colModel.type == ColumnType.formula) {
+                  final input = event.value.toString();
+                  final evaluated = _controller.evaluateCellInput(
+                    event.row,
+                    colModel.name,
+                    input,
+                  );
+                  if (evaluated != input) {
+                    // Update with evaluated result
+                    _controller.stateManager.changeCellValue(
+                      event.row.cells[event.column.field]!,
+                      evaluated,
+                      callOnChangedEvent: false,
+                    );
+                  }
+                }
+
+                // If currently editing a formula column, exclude it from recalculation
+                // so the manual override isn't immediately overwritten
+                if (colModel.type == ColumnType.formula) {
+                  excludeColName = colModel.name;
+                }
+              }
+            }
+
             try {
-              _controller.recalculateFormulas(event.row);
+              _controller.recalculateFormulas(
+                event.row,
+                excludeColumn: excludeColName,
+              );
             } catch (e) {
-              print('Error calculating formulas: $e');
+              debugPrint('Error calculating formulas: $e');
             }
           },
           onColumnsMoved: (PlutoGridOnColumnsMovedEvent event) {
