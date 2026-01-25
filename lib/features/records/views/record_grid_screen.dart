@@ -25,6 +25,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
   final AuthController _authController = Get.find<AuthController>();
   final TextEditingController _searchController = TextEditingController();
   bool _isEditing = false;
+  bool _isDeleteMode = false;
   int _gridVersion = 0;
 
   @override
@@ -120,7 +121,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         type: PlutoColumnType.number(),
         readOnly: true,
         width: 70,
-        enableRowChecked: false,
+        enableRowChecked: _isDeleteMode,
         frozen: PlutoColumnFrozen.start,
         enableColumnDrag: false,
       ),
@@ -1245,6 +1246,48 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     });
   }
 
+  void _deleteSelectedRows() {
+    if (!_isEditing) return;
+
+    final checkedRows = _controller.stateManager.checkedRows;
+    if (checkedRows.isEmpty) {
+      Get.snackbar('Info', 'No rows selected. Check the boxes in S.No column.');
+      return;
+    }
+
+    Get.defaultDialog(
+      title: 'Delete Rows',
+      middleText: 'Delete ${checkedRows.length} rows? This cannot be undone.',
+      textConfirm: 'DELETE',
+      textCancel: 'CANCEL',
+      confirmTextColor: Colors.white,
+      onConfirm: () async {
+        Get.back(); // close dialog
+
+        final idsToDelete = <int>[];
+        for (var row in checkedRows) {
+          final idStr = row.cells['__id']?.value.toString();
+          if (idStr != null && idStr.isNotEmpty) {
+            final id = int.tryParse(idStr);
+            if (id != null) idsToDelete.add(id);
+          }
+        }
+
+        if (idsToDelete.isNotEmpty) {
+          await _controller.batchDeleteRecords(idsToDelete);
+        } else {
+          // Temp rows only
+          _controller.stateManager.removeRows(checkedRows);
+        }
+
+        Get.snackbar('Success', 'Deleted ${checkedRows.length} rows');
+        setState(() {
+          _gridVersion++;
+        }); // Force refresh check state
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1454,7 +1497,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                   label: const Text('ADD ROW'),
                 ),
                 const SizedBox(width: 8),
-                if (_isEditing)
+                if (_isEditing) ...[
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.blue.withOpacity(0.1),
@@ -1476,6 +1519,8 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                                 labelText: 'Number of rows',
                                 hintText: 'e.g., 5',
                               ),
+                              onSubmitted: (val) =>
+                                  Get.back(result: int.tryParse(val) ?? 0),
                             ),
                             actions: [
                               TextButton(
@@ -1483,24 +1528,66 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                                 child: const Text('CANCEL'),
                               ),
                               ElevatedButton(
-                                onPressed: () {
-                                  final n = int.tryParse(countController.text);
-                                  if (n != null && n > 0) {
-                                    Get.back(result: n);
-                                  }
-                                },
+                                onPressed: () => Get.back(
+                                  result:
+                                      int.tryParse(countController.text) ?? 0,
+                                ),
                                 child: const Text('ADD'),
                               ),
                             ],
                           ),
                         );
-
-                        if (count != null) {
-                          _addRows(count);
-                        }
+                        if (count != null) _addRows(count);
                       },
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  if (!_isDeleteMode)
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _isDeleteMode = true;
+                          _gridVersion++;
+                        });
+                      },
+                      icon: const Icon(Icons.delete_sweep),
+                      label: const Text('DELETE ROWS'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade400,
+                        foregroundColor: Colors.white,
+                      ),
+                    )
+                  else ...[
+                    ElevatedButton.icon(
+                      onPressed: _deleteSelectedRows,
+                      icon: const Icon(Icons.delete_forever),
+                      label: const Text('CONFIRM DELETE'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          _isDeleteMode = false;
+                          // Clear selection if possible?
+                          // stateManager.setRowChecked(row, false)? Loop all?
+                          // Actually grid rebuild will clear selections implicitly if check column is disabled?
+                          // Or we should manually clear.
+                          _controller.stateManager.toggleAllRowChecked(false);
+                          _gridVersion++;
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('CANCEL'),
+                    ),
+                  ],
+                ],
                 const SizedBox(width: 16),
                 const Text(
                   'Use TAB or ENTER to navigate',

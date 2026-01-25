@@ -116,6 +116,16 @@ class RecordController extends GetxController {
     await loadRecords();
   }
 
+  Future<void> batchDeleteRecords(List<int> ids) async {
+    final db = await DatabaseService.database;
+    final batch = db.batch();
+    for (var id in ids) {
+      batch.delete('form_records', where: 'id = ?', whereArgs: [id]);
+    }
+    await batch.commit(noResult: true);
+    await loadRecords();
+  }
+
   void recalculateAllRows() {
     if (stateManager.rows.isEmpty) return;
     for (var row in stateManager.rows) {
