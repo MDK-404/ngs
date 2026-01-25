@@ -26,6 +26,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
   final TextEditingController _searchController = TextEditingController();
   bool _isEditing = false;
   bool _isDeleteMode = false;
+  bool _gridInitialized = false;
   int _gridVersion = 0;
 
   @override
@@ -1205,6 +1206,19 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     );
   }
 
+  // Method to safely filter
+  void _onSearchChanged(String val) {
+    if (!_gridInitialized) return;
+
+    _controller.stateManager.setFilter((PlutoRow row) {
+      if (val.isEmpty) return true;
+      return widget.form.columns.any((col) {
+        final cellVal = row.cells[col.name]?.value.toString() ?? '';
+        return cellVal.toLowerCase().contains(val.toLowerCase());
+      });
+    });
+  }
+
   void _addRows(int count) {
     if (!_isEditing) return;
     if (count <= 0) return;
@@ -1246,55 +1260,169 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     });
   }
 
-  void _deleteSelectedRows() {
+  void _onRowSecondaryTap(PlutoGridOnRowSecondaryTapEvent event) {
     if (!_isEditing) return;
 
-    final checkedRows = _controller.stateManager.checkedRows;
-    if (checkedRows.isEmpty) {
-      Get.snackbar('Info', 'No rows selected. Check the boxes in S.No column.');
-      return;
+    // Calculate position for the menu
+    // offset is typically local to the grid. We need global for showMenu.
+    // However, event.offset isn't always reliable for showMenu's generic positioning.
+    // We can use a trick with RenderBox or just approximation if offset is global-ish.
+    // PlutoGrid 6.x: event.offset is local to the cell or row?
+    // Let's assume we can get a position.
+    // Actually, `showMenu` require `position` (RelativeRect).
+
+    // Better strategy: Calculate rect from tap offset?
+    // Since we don't have the TapDownDetails here, we rely on event.offset.
+    // Let's try to use the cell position.
+
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+
+    // We might need the pointer position which isn't fully in event.
+    // But let's try displaying a Get.dialog or BottomSheet as it's safer than positioning a Menu blindly?
+    // Or use PlutoGrid's built-in context menu handling if available.
+    // Let's stick to a Context Menu using `showMenu` if we can guess position, or just a Dialog.
+    // User asked for "Right click... give option". Context Menu is best.
+
+    // For now, I'll use a fixed position based on the mouse pointer if possible, but Flutter web/desktop
+    // usually requires `Listener` to get pointer.
+    // PlutoGrid `onRowSecondaryTap` triggers on right click.
+
+    // Let's use `Get.customMenu` or similar? No.
+
+    // Allow users to delete focused row or selected rows.
+
+    final selectedRows = _controller.stateManager.checkedRows;
+    final targetRow = event.row;
+    final bool isTargetSelected = selectedRows.contains(targetRow);
+
+    // If user right-clicked a row, and it's not in selection, maybe select it?
+    // Standard OS behavior: Right click selects the item if not selected.
+    if (!isTargetSelected && selectedRows.isEmpty) {
+      // Just operate on targetRow
     }
 
+    showDialog(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Row Actions'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () {
+              Get.back();
+              _deleteSingleRow(targetRow);
+            },
+            child: const Row(
+              children: [
+                Icon(Icons.delete, color: Colors.red),
+                SizedBox(width: 8),
+                Text('Delete this row'),
+              ],
+            ),
+          ),
+          if (selectedRows.isNotEmpty)
+            SimpleDialogOption(
+              onPressed: () {
+                Get.back();
+                _deleteMultipleRows(selectedRows);
+              },
+              child: Row(
+                children: [
+                  const Icon(Icons.delete_sweep, color: Colors.red),
+                  const SizedBox(width: 8),
+                  Text('Delete ${selectedRows.length} selected rows'),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteSingleRow(PlutoRow row) async {
+    final idStr = row.cells['__id']?.value.toString();
+    if (idStr != null && idStr.isNotEmpty) {
+      final id = int.tryParse(idStr);
+      if (id != null) {
+        await _controller.deleteRecord(id);
+        Get.snackbar('Success', 'Row deleted');
+        setState(() {
+          _gridVersion++;
+        });
+      }
+    } else {
+      _controller.stateManager.removeRows([row]);
+      Get.snackbar('Success', 'Row deleted');
+    }
+  }
+
+  Future<void> _deleteMultipleRows(List<PlutoRow> rows) async {
     Get.defaultDialog(
       title: 'Delete Rows',
-      middleText: 'Delete ${checkedRows.length} rows? This cannot be undone.',
+      middleText: 'Delete ${rows.length} rows?',
       textConfirm: 'DELETE',
-      textCancel: 'CANCEL',
       confirmTextColor: Colors.white,
       onConfirm: () async {
-        Get.back(); // close dialog
-
+        Get.back();
         final idsToDelete = <int>[];
-        for (var row in checkedRows) {
-          final idStr = row.cells['__id']?.value.toString();
+        for (var r in rows) {
+          final idStr = r.cells['__id']?.value.toString();
           if (idStr != null && idStr.isNotEmpty) {
             final id = int.tryParse(idStr);
             if (id != null) idsToDelete.add(id);
           }
         }
-
         if (idsToDelete.isNotEmpty) {
           await _controller.batchDeleteRecords(idsToDelete);
-        } else {
-          // Temp rows only
-          _controller.stateManager.removeRows(checkedRows);
         }
-
-        Get.snackbar('Success', 'Deleted ${checkedRows.length} rows');
+        // Also remove temp rows if any in valid selection
+        // But batchDelete reloads grid so temp rows disappear or stay?
+        // reloadRecords reloads from DB. Temp rows (not saved) will be lost if we reload.
+        // Saved rows are deleted.
+        // So pure UI remove is redundant if we reload.
+        _controller.stateManager.removeRows(
+          rows,
+        ); // Remove unsaved rows from UI
+        Get.snackbar('Success', 'Deleted ${rows.length} rows');
         setState(() {
           _gridVersion++;
-        }); // Force refresh check state
+        });
       },
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isWide = MediaQuery.of(context).size.width > 900;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.form.name} Records'),
         actions: [
-          // Edit/Save Button - Primary Action
+          // Responsive Actions
+          if (isWide) ...[
+            ElevatedButton.icon(
+              onPressed: () => _exportToPdf(),
+              icon: const Icon(Icons.picture_as_pdf),
+              label: const Text('EXPORT PDF'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.teal,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: () => _importExcel(),
+              icon: const Icon(Icons.file_upload),
+              label: const Text('IMPORT EXCEL'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
+
           if (!_isEditing)
             ElevatedButton.icon(
               onPressed: _promptPinForEdit,
@@ -1318,7 +1446,6 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
 
           const SizedBox(width: 8),
 
-          // Manage Button
           ElevatedButton.icon(
             onPressed: _showManageColumnsDialog,
             icon: const Icon(Icons.settings),
@@ -1342,35 +1469,35 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
             ),
           ],
 
-          const SizedBox(width: 8),
+          // If small screen, show More menu for hidden items
+          if (!isWide)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              tooltip: 'More Actions',
+              onSelected: (val) {
+                if (val == 'export') _exportToPdf();
+                if (val == 'import') _importExcel();
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'export',
+                  child: ListTile(
+                    leading: Icon(Icons.picture_as_pdf, color: Colors.teal),
+                    title: Text('Export PDF'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'import',
+                  child: ListTile(
+                    leading: Icon(Icons.file_upload, color: Colors.indigo),
+                    title: Text('Import Excel'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              ],
+            ),
 
-          // More Actions Menu (Export/Import)
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            tooltip: 'More Actions',
-            onSelected: (value) {
-              if (value == 'export') _exportToPdf();
-              if (value == 'import') _importExcel();
-            },
-            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-              const PopupMenuItem<String>(
-                value: 'export',
-                child: ListTile(
-                  leading: Icon(Icons.picture_as_pdf, color: Colors.teal),
-                  title: Text('Export PDF'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              const PopupMenuItem<String>(
-                value: 'import',
-                child: ListTile(
-                  leading: Icon(Icons.file_upload, color: Colors.indigo),
-                  title: Text('Import Excel'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-            ],
-          ),
           const SizedBox(width: 16),
         ],
       ),
@@ -1378,260 +1505,262 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         if (_controller.isLoading.value) {
           return const Center(child: CircularProgressIndicator());
         }
-        return PlutoGrid(
-          key: ValueKey('grid_${widget.form.id}_${_isEditing}_$_gridVersion'),
-          columns: _buildColumns(),
-          rows: _buildRows(),
-          onChanged: (PlutoGridOnChangedEvent event) {
-            String? excludeColName;
 
-            // Intercept change to check for inline formula
-            if (event.column.field.isNotEmpty) {
-              final colModel = widget.form.columns.firstWhereOrNull(
-                (c) => c.name == event.column.field,
-              );
-
-              if (colModel != null) {
-                // Allow inline math for Number AND Formula columns
-                if (colModel.type == ColumnType.number ||
-                    colModel.type == ColumnType.formula) {
-                  final input = event.value.toString();
-                  final evaluated = _controller.evaluateCellInput(
-                    event.row,
-                    colModel.name,
-                    input,
-                  );
-                  if (evaluated != input) {
-                    // Update with evaluated result
-                    _controller.stateManager.changeCellValue(
-                      event.row.cells[event.column.field]!,
-                      evaluated,
-                      callOnChangedEvent: false,
-                    );
-                  }
-                }
-
-                // If currently editing a formula column, exclude it from recalculation
-                // so the manual override isn't immediately overwritten
-                if (colModel.type == ColumnType.formula) {
-                  excludeColName = colModel.name;
-                }
-              }
-            }
-
-            try {
-              _controller.recalculateFormulas(
-                event.row,
-                excludeColumn: excludeColName,
-              );
-            } catch (e) {
-              debugPrint('Error calculating formulas: $e');
-            }
-          },
-          onColumnsMoved: (PlutoGridOnColumnsMovedEvent event) {
-            // Update the form model to reflect the new column order
-            final sortedColumns = _controller.stateManager.columns;
-            final newOrderNames = sortedColumns
-                .where((c) => c.field != 'serial_no' && c.field != '__id')
-                .map((c) => c.field)
-                .toList();
-
-            final oldColumnsMap = {
-              for (var c in widget.form.columns) c.name: c,
-            };
-            final newColumnsList = <ColumnModel>[];
-
-            for (var name in newOrderNames) {
-              if (oldColumnsMap.containsKey(name)) {
-                newColumnsList.add(oldColumnsMap[name]!);
-              }
-            }
-
-            // Update references
-            widget.form.columns.clear();
-            widget.form.columns.addAll(newColumnsList);
-          },
-          onLoaded: (PlutoGridOnLoadedEvent event) {
-            _controller.stateManager = event.stateManager;
-            event.stateManager.setSelectingMode(PlutoGridSelectingMode.row);
-
-            // If no records, automatically enter edit mode and add default rows
-            if (_controller.records.isEmpty) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                setState(() {
-                  _isEditing = true;
-                });
-                // We need to bypass the _isEditing check in _addRows or just reproduce logic
-                event.stateManager.setEditing(true);
-
-                final newRows = <PlutoRow>[];
-                for (var i = 0; i < 20; i++) {
-                  final newRow = event.stateManager.getNewRow();
-                  newRow.cells['serial_no']?.value = (i + 1).toString();
-                  for (var col in widget.form.columns) {
-                    newRow.cells[col.name]?.value = '';
-                  }
-                  newRows.add(newRow);
-                }
-                event.stateManager.insertRows(0, newRows);
-              });
-            }
-          },
-          configuration: const PlutoGridConfiguration(
-            scrollbar: PlutoGridScrollbarConfig(
-              isAlwaysShown: true,
-              scrollbarThickness: 10,
-              scrollbarRadius: Radius.circular(5),
-            ),
-            style: PlutoGridStyleConfig(),
-            enableMoveDownAfterSelecting: true,
-            enterKeyAction: PlutoGridEnterKeyAction.editingAndMoveDown,
-          ),
-          createHeader: (stateManager) => Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Row(
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _isEditing ? () => _addRows(1) : null,
-                  icon: const Icon(Icons.add),
-                  label: const Text('ADD ROW'),
-                ),
-                const SizedBox(width: 8),
-                if (_isEditing) ...[
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: Colors.blue),
-                    ),
-                    child: IconButton(
-                      icon: const Icon(Icons.playlist_add, color: Colors.blue),
-                      tooltip: 'Add Multiple Rows',
-                      onPressed: () async {
-                        final countController = TextEditingController();
-                        final count = await Get.dialog<int>(
-                          AlertDialog(
-                            title: const Text('Add Multiple Rows'),
-                            content: TextField(
-                              controller: countController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Number of rows',
-                                hintText: 'e.g., 5',
+        return Column(
+          children: [
+            // Header Row (Search & Actions) - Moved OUT of PlutoGrid
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  // ADD ROW Buttons
+                  if (_isEditing && _gridInitialized)
+                    PopupMenuButton<String>(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.blue,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.add, color: Colors.white),
+                            SizedBox(width: 8),
+                            Text(
+                              'ADD DATA',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
                               ),
-                              onSubmitted: (val) =>
-                                  Get.back(result: int.tryParse(val) ?? 0),
                             ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Get.back(),
-                                child: const Text('CANCEL'),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => Get.back(
-                                  result:
-                                      int.tryParse(countController.text) ?? 0,
-                                ),
-                                child: const Text('ADD'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (count != null) _addRows(count);
+                            Icon(Icons.arrow_drop_down, color: Colors.white),
+                          ],
+                        ),
+                      ),
+                      onSelected: (val) {
+                        if (val == 'single') _addRows(1);
+                        if (val == 'multiple') {
+                          _showAddMultipleDialog();
+                        }
                       },
+                      itemBuilder: (ctx) => [
+                        const PopupMenuItem(
+                          value: 'single',
+                          child: Text('Add Single Row'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'multiple',
+                          child: Text('Add Multiple Rows'),
+                        ),
+                      ],
+                    ),
+
+                  if (_isEditing) const SizedBox(width: 16),
+                  const Text(
+                    'Right-click rows to delete',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  if (!_isDeleteMode)
-                    ElevatedButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          _isDeleteMode = true;
-                          _gridVersion++;
-                        });
-                      },
-                      icon: const Icon(Icons.delete_sweep),
-                      label: const Text('DELETE ROWS'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red.shade400,
-                        foregroundColor: Colors.white,
+
+                  const Spacer(),
+                  // Search Bar
+                  SizedBox(
+                    width: 300,
+                    height: 40,
+                    child: TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        hintText: 'Search...',
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                        ),
+                        filled: true,
+                        fillColor: Colors.white,
                       ),
-                    )
-                  else ...[
-                    ElevatedButton.icon(
-                      onPressed: _deleteSelectedRows,
-                      icon: const Icon(Icons.delete_forever),
-                      label: const Text('CONFIRM DELETE'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red,
-                        foregroundColor: Colors.white,
-                      ),
+                      style: const TextStyle(color: Colors.black),
+                      onChanged: _onSearchChanged,
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () {
-                        setState(() {
-                          _isDeleteMode = false;
-                          // Clear selection if possible?
-                          // stateManager.setRowChecked(row, false)? Loop all?
-                          // Actually grid rebuild will clear selections implicitly if check column is disabled?
-                          // Or we should manually clear.
-                          _controller.stateManager.toggleAllRowChecked(false);
-                          _gridVersion++;
-                        });
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.grey,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: const Text('CANCEL'),
-                    ),
-                  ],
+                  ),
                 ],
-                const SizedBox(width: 16),
-                const Text(
-                  'Use TAB or ENTER to navigate',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-                const Spacer(),
-                SizedBox(
-                  width: 300,
-                  height: 40,
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search...',
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 0,
-                      ),
-                      filled: true,
-                      fillColor: Colors.white,
-                    ),
-                    style: const TextStyle(color: Colors.black),
-                    onChanged: (val) {
-                      stateManager.setFilter((PlutoRow row) {
-                        if (val.isEmpty) return true;
-                        return widget.form.columns.any((col) {
-                          final cellVal =
-                              row.cells[col.name]?.value.toString() ?? '';
-                          return cellVal.toLowerCase().contains(
-                            val.toLowerCase(),
-                          );
-                        });
-                      });
-                    },
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
+            Expanded(
+              child: PlutoGrid(
+                key: ValueKey(
+                  'grid_${widget.form.id}_${_isEditing}_$_gridVersion',
+                ),
+                columns: _buildColumns(),
+                rows: _buildRows(),
+                onChanged: (PlutoGridOnChangedEvent event) {
+                  String? excludeColName;
+
+                  // Intercept change to check for inline formula
+                  if (event.column.field.isNotEmpty) {
+                    final colModel = widget.form.columns.firstWhereOrNull(
+                      (c) => c.name == event.column.field,
+                    );
+
+                    if (colModel != null) {
+                      // Allow inline math for Number AND Formula columns
+                      if (colModel.type == ColumnType.number ||
+                          colModel.type == ColumnType.formula) {
+                        final input = event.value.toString();
+                        final evaluated = _controller.evaluateCellInput(
+                          event.row,
+                          colModel.name,
+                          input,
+                        );
+                        if (evaluated != input) {
+                          // Update with evaluated result
+                          _controller.stateManager.changeCellValue(
+                            event.row.cells[event.column.field]!,
+                            evaluated,
+                            callOnChangedEvent: false,
+                          );
+                        }
+                      }
+
+                      // If currently editing a formula column, exclude it from recalculation
+                      // so the manual override isn't immediately overwritten
+                      if (colModel.type == ColumnType.formula) {
+                        excludeColName = colModel.name;
+                      }
+                    }
+                  }
+
+                  try {
+                    _controller.recalculateFormulas(
+                      event.row,
+                      excludeColumn: excludeColName,
+                    );
+                  } catch (e) {
+                    debugPrint('Error calculating formulas: $e');
+                  }
+
+                  // Save changes to DB if it's an existing row
+                  final idStr = event.row.cells['__id']?.value;
+                  if (idStr != null && idStr.toString().isNotEmpty) {
+                    final id = int.tryParse(idStr.toString());
+                    final data = <String, dynamic>{};
+                    event.row.cells.forEach((key, cell) {
+                      if (key != 'serial_no' && key != '__id') {
+                        data[key] = cell.value;
+                      }
+                    });
+                    if (id != null) {
+                      _controller.updateRecord(id, data);
+                    }
+                  }
+                },
+                onColumnsMoved: (PlutoGridOnColumnsMovedEvent event) {
+                  // Update the form model to reflect the new column order
+                  final sortedColumns = _controller.stateManager.columns;
+                  final newOrderNames = sortedColumns
+                      .where((c) => c.field != 'serial_no' && c.field != '__id')
+                      .map((c) => c.field)
+                      .toList();
+
+                  final oldColumnsMap = {
+                    for (var c in widget.form.columns) c.name: c,
+                  };
+                  final newColumnsList = <ColumnModel>[];
+
+                  for (var name in newOrderNames) {
+                    if (oldColumnsMap.containsKey(name)) {
+                      newColumnsList.add(oldColumnsMap[name]!);
+                    }
+                  }
+
+                  // Update references
+                  widget.form.columns.clear();
+                  widget.form.columns.addAll(newColumnsList);
+                },
+                onLoaded: (PlutoGridOnLoadedEvent event) {
+                  _controller.stateManager = event.stateManager;
+                  event.stateManager.setSelectingMode(
+                    PlutoGridSelectingMode.row,
+                  );
+                  event.stateManager.setShowColumnFilter(
+                    false,
+                  ); // Hidden as requested
+
+                  // Mark grid as initialized so search can work
+                  if (!_gridInitialized) {
+                    // Use a post frame callback or SetState to update UI safely
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        setState(() {
+                          _gridInitialized = true;
+                        });
+                        // Re-apply search if controller has text
+                        if (_searchController.text.isNotEmpty) {
+                          _onSearchChanged(_searchController.text);
+                        }
+                      }
+                    });
+                  }
+
+                  // If no records, automatically enter edit mode and add default rows
+                  if (_controller.records.isEmpty) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      // No auto edit
+                    });
+                  }
+                },
+                onRowSecondaryTap: _onRowSecondaryTap, // Right Click Handler
+                configuration: const PlutoGridConfiguration(
+                  scrollbar: PlutoGridScrollbarConfig(
+                    isAlwaysShown: true,
+                    scrollbarThickness: 10,
+                    scrollbarRadius: Radius.circular(5),
+                  ),
+                  columnSize: PlutoGridColumnSizeConfig(
+                    autoSizeMode: PlutoAutoSizeMode.scale,
+                  ),
+                  style: PlutoGridStyleConfig(),
+                  enableMoveDownAfterSelecting: true,
+                  enterKeyAction: PlutoGridEnterKeyAction.editingAndMoveDown,
+                ),
+              ),
+            ),
+          ],
         );
       }),
     );
+  }
+
+  void _showAddMultipleDialog() async {
+    final countController = TextEditingController();
+    final count = await Get.dialog<int>(
+      AlertDialog(
+        title: const Text('Add Multiple Rows'),
+        content: TextField(
+          controller: countController,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Number of rows'),
+          onSubmitted: (val) => Get.back(result: int.tryParse(val) ?? 0),
+        ),
+        actions: [
+          TextButton(onPressed: () => Get.back(), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () {
+              Get.back(result: int.tryParse(countController.text) ?? 0);
+            },
+            child: const Text('ADD'),
+          ),
+        ],
+      ),
+    );
+    if (count != null && count > 0) _addRows(count);
   }
 }
