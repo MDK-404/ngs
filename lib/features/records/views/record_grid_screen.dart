@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:pluto_grid/pluto_grid.dart';
 import 'package:intl/intl.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:excel/excel.dart' hide Border;
+import 'package:ngs_recordbook/core/services/excel_service.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -614,6 +617,171 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     );
   }
 
+  Future<void> _importExcel() async {
+    // 1. PIN Verification
+    final pinController = TextEditingController();
+    final verified = await Get.dialog<bool>(
+      AlertDialog(
+        title: const Text('Enter PIN to Import'),
+        content: TextField(
+          controller: pinController,
+          obscureText: true,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'PIN',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) async {
+            final isValid = await _authController.verifyEditAction(
+              pinController.text,
+            );
+            Get.back(result: isValid);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(result: false),
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final isValid = await _authController.verifyEditAction(
+                pinController.text,
+              );
+              Get.back(result: isValid);
+            },
+            child: const Text('VERIFY'),
+          ),
+        ],
+      ),
+    );
+
+    if (verified != true) {
+      Get.snackbar(
+        'Error',
+        'Invalid PIN or Cancelled',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return;
+    }
+
+    // 2. Pick File
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xlsx'],
+    );
+
+    if (result == null || result.files.isEmpty) return;
+
+    final path = result.files.single.path!;
+    final fileName = result.files.single.name;
+
+    try {
+      // 3. Read Excel
+      _controller.isLoading.value = true;
+      final excel = await ExcelService.readFile(path);
+      _controller.isLoading.value = false;
+
+      if (excel == null) {
+        Get.snackbar('Error', 'Could not read Excel file');
+        return;
+      }
+
+      final sheets = ExcelService.getSheetNames(excel);
+      if (sheets.isEmpty) {
+        Get.snackbar('Error', 'No sheets found');
+        return;
+      }
+
+      // 4. Select Sheet
+      String selectedSheet = sheets.first;
+      if (sheets.length > 1) {
+        final selection = await Get.dialog<String>(
+          AlertDialog(
+            title: const Text('Select Sheet'),
+            content: SizedBox(
+              width: 300,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: sheets.length,
+                itemBuilder: (ctx, i) => ListTile(
+                  title: Text(sheets[i]),
+                  onTap: () => Get.back(result: sheets[i]),
+                ),
+              ),
+            ),
+          ),
+        );
+        if (selection == null) return;
+        selectedSheet = selection;
+      }
+
+      // 5. Parse & Validate
+      _controller.isLoading.value = true;
+      List<Map<String, dynamic>> parsedData;
+      try {
+        parsedData = ExcelService.parseSheetData(
+          excel: excel,
+          sheetName: selectedSheet,
+          formColumns: widget.form.columns,
+        );
+      } catch (e) {
+        _controller.isLoading.value = false;
+        Get.defaultDialog(
+          title: 'Validation Error',
+          middleText: e.toString(),
+          textConfirm: 'OK',
+          onConfirm: () => Get.back(),
+        );
+        return;
+      }
+      _controller.isLoading.value = false;
+
+      // 6. Confirmation
+      final confirm = await Get.defaultDialog<bool>(
+        title: 'Confirm Import',
+        content: Column(
+          children: [
+            Text('File: $fileName'),
+            Text('Sheet: $selectedSheet'),
+            const SizedBox(height: 8),
+            Text(
+              'Rows to Import: ${parsedData.length}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Warning: Ensure column order matches exactly!',
+              style: TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ],
+        ),
+        textConfirm: 'IMPORT',
+        textCancel: 'CANCEL',
+        onConfirm: () => Get.back(result: true),
+        onCancel: () => Get.back(result: false),
+      );
+
+      if (confirm == true) {
+        // 7. Import
+        await _controller.batchImportRecords(parsedData);
+        Get.snackbar(
+          'Success',
+          'Successfully imported ${parsedData.length} records',
+        );
+
+        // Fix S.No by forcing rebuild or reload
+        setState(() {
+          _gridVersion++;
+        });
+      }
+    } catch (e) {
+      _controller.isLoading.value = false;
+      Get.snackbar('Error', 'Import failed: $e');
+    }
+  }
+
   Future<void> _showEditColumnDialog(ColumnModel col) async {
     final nameController = TextEditingController(text: col.name);
     final formulaController = TextEditingController(text: col.formula ?? '');
@@ -1083,16 +1251,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
       appBar: AppBar(
         title: Text('${widget.form.name} Records'),
         actions: [
-          ElevatedButton.icon(
-            onPressed: () => _exportToPdf(),
-            icon: const Icon(Icons.picture_as_pdf),
-            label: const Text('EXPORT PDF'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.teal,
-              foregroundColor: Colors.white,
-            ),
-          ),
-          const SizedBox(width: 8),
+          // Edit/Save Button - Primary Action
           if (!_isEditing)
             ElevatedButton.icon(
               onPressed: _promptPinForEdit,
@@ -1113,7 +1272,10 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                 foregroundColor: Colors.white,
               ),
             ),
+
           const SizedBox(width: 8),
+
+          // Manage Button
           ElevatedButton.icon(
             onPressed: _showManageColumnsDialog,
             icon: const Icon(Icons.settings),
@@ -1123,17 +1285,49 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
               foregroundColor: Colors.white,
             ),
           ),
-          const SizedBox(width: 8),
-          if (_isEditing)
+
+          if (_isEditing) ...[
+            const SizedBox(width: 8),
             ElevatedButton.icon(
               onPressed: _showAddColumnDialog,
               icon: const Icon(Icons.view_column),
-              label: const Text('ADD COLUMN'),
+              label: const Text('ADD COL'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
               ),
             ),
+          ],
+
+          const SizedBox(width: 8),
+
+          // More Actions Menu (Export/Import)
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'More Actions',
+            onSelected: (value) {
+              if (value == 'export') _exportToPdf();
+              if (value == 'import') _importExcel();
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'export',
+                child: ListTile(
+                  leading: Icon(Icons.picture_as_pdf, color: Colors.teal),
+                  title: Text('Export PDF'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem<String>(
+                value: 'import',
+                child: ListTile(
+                  leading: Icon(Icons.file_upload, color: Colors.indigo),
+                  title: Text('Import Excel'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(width: 16),
         ],
       ),

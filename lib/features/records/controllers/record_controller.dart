@@ -8,7 +8,7 @@ import '../utils/formula_engine.dart';
 class RecordController extends GetxController {
   final FormModel form;
   final RxList<RecordModel> records = <RecordModel>[].obs;
-  final RxBool isLoading = false.obs;
+  final RxBool isLoading = true.obs; // Start loading effectively
 
   late PlutoGridStateManager stateManager;
 
@@ -225,5 +225,20 @@ class RecordController extends GetxController {
     } catch (e) {
       return null;
     }
+  }
+
+  Future<void> batchImportRecords(
+    List<Map<String, dynamic>> recordsData,
+  ) async {
+    final db = await DatabaseService.database;
+    if (form.id == null) return;
+
+    final batch = db.batch();
+    for (var data in recordsData) {
+      final record = RecordModel(formId: form.id!, data: data);
+      batch.insert('form_records', record.toMap());
+    }
+    await batch.commit(noResult: true);
+    await loadRecords();
   }
 }

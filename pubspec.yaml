@@ -47,6 +47,9 @@ dependencies:
   sqlite3_flutter_libs: ^0.5.25
   pdf: ^3.10.8
   printing: ^5.11.1
+  excel: ^4.0.6
+  file_picker: ^10.3.8
+  spreadsheet_decoder: ^2.3.0
 
 dev_dependencies:
   flutter_test:
