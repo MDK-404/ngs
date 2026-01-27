@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:pluto_grid/pluto_grid.dart';
@@ -77,6 +78,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         enableEditingMode: _isEditing,
         frozen: isLocked ? PlutoColumnFrozen.start : PlutoColumnFrozen.none,
         enableColumnDrag: !isLocked,
+        hide: col.isHidden && !_isEditing,
         enableContextMenu: true, // Enable context menu
         backgroundColor:
             bgColor, // Header background? No, this might be mostly for decoration
@@ -404,11 +406,15 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                 }
 
                 // Add column to form model
+                final isHidden = nameController.text.toLowerCase().contains(
+                  'purchase',
+                );
                 final newCol = ColumnModel(
                   formId: widget.form.id,
                   name: nameController.text,
                   type: selectedType,
                   formula: formula,
+                  isHidden: isHidden,
                 );
 
                 await _controller.addColumn(newCol);
@@ -490,6 +496,35 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              IconButton(
+                                icon: Icon(
+                                  col.isHidden
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                  color: Colors.grey,
+                                ),
+                                onPressed: () async {
+                                  final newCol = ColumnModel(
+                                    id: col.id,
+                                    formId: col.formId,
+                                    name: col.name,
+                                    type: col.type,
+                                    formula: col.formula,
+                                    textColor: col.textColor,
+                                    backgroundColor: col.backgroundColor,
+                                    isHidden: !col.isHidden,
+                                  );
+                                  await _controller.updateColumn(
+                                    col.name,
+                                    newCol,
+                                  );
+                                  setState(() {
+                                    widget.form.columns[index] = newCol;
+                                    _gridVersion++;
+                                  });
+                                  setDtState(() {});
+                                },
+                              ),
                               IconButton(
                                 icon: const Icon(
                                   Icons.palette,
@@ -1206,6 +1241,67 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     );
   }
 
+  Future<void> _exportToExcel() async {
+    // 1. Prepare Data
+    final headers = ['S.No', ...widget.form.columns.map((c) => c.name)];
+    final data = <List<dynamic>>[];
+
+    for (var i = 0; i < _controller.records.length; i++) {
+      final record = _controller.records[i];
+      final rowData = <dynamic>[];
+      rowData.add(i + 1); // S.No
+
+      for (var col in widget.form.columns) {
+        final val = record.data[col.name];
+        rowData.add(val);
+      }
+      data.add(rowData);
+    }
+
+    if (data.isEmpty) {
+      Get.snackbar('Info', 'No records to export');
+      return;
+    }
+
+    // 2. Generate Excel Bytes
+    _controller.isLoading.value = true;
+    final bytes = await ExcelService.exportToExcel(
+      sheetName: widget.form.name,
+      headers: headers,
+      data: data,
+    );
+    _controller.isLoading.value = false;
+
+    if (bytes == null) {
+      Get.snackbar('Error', 'Failed to generate Excel file');
+      return;
+    }
+
+    // 3. Save File
+    final result = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save Excel File',
+      fileName: '${widget.form.name}_export.xlsx',
+      type: FileType.custom,
+      allowedExtensions: ['xlsx'],
+    );
+
+    if (result != null) {
+      try {
+        // Ensure extension
+        String path = result;
+        if (!path.endsWith('.xlsx')) {
+          path += '.xlsx';
+        }
+
+        final file = File(path);
+        await file.writeAsBytes(bytes);
+        Get.snackbar('Success', 'Exported to $path');
+      } catch (e) {
+        Get.snackbar('Error', 'Failed to save file: $e');
+      }
+    }
+  }
+
   // Method to safely filter
   void _onSearchChanged(String val) {
     if (!_gridInitialized) return;
@@ -1401,13 +1497,62 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
         actions: [
           // Responsive Actions
           if (isWide) ...[
-            ElevatedButton.icon(
-              onPressed: () => _exportToPdf(),
-              icon: const Icon(Icons.picture_as_pdf),
-              label: const Text('EXPORT PDF'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.teal,
-                foregroundColor: Colors.white,
+            PopupMenuButton<String>(
+              tooltip: 'Export Options',
+              offset: const Offset(0, 40),
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'pdf',
+                  child: ListTile(
+                    leading: Icon(Icons.picture_as_pdf, color: Colors.teal),
+                    title: Text('Export PDF'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'excel',
+                  child: ListTile(
+                    leading: Icon(Icons.table_view, color: Colors.green),
+                    title: Text('Export Excel'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              ],
+              onSelected: (val) {
+                if (val == 'pdf') _exportToPdf();
+                if (val == 'excel') _exportToExcel();
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.teal,
+                  borderRadius: BorderRadius.circular(4),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black12,
+                      offset: Offset(0, 2),
+                      blurRadius: 2,
+                    ),
+                  ],
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.download, color: Colors.white),
+                    SizedBox(width: 8),
+                    Text(
+                      'EXPORT',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Icon(Icons.arrow_drop_down, color: Colors.white),
+                  ],
+                ),
               ),
             ),
             const SizedBox(width: 8),

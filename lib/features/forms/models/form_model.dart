@@ -27,6 +27,7 @@ class ColumnModel {
   final String? formula;
   final String? textColor;
   final String? backgroundColor;
+  final bool isHidden;
 
   ColumnModel({
     this.id,
@@ -36,6 +37,7 @@ class ColumnModel {
     this.formula,
     this.textColor,
     this.backgroundColor,
+    this.isHidden = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -47,6 +49,7 @@ class ColumnModel {
       'formula': formula,
       'text_color': textColor,
       'background_color': backgroundColor,
+      'is_hidden': isHidden ? 1 : 0,
     };
   }
 
@@ -59,6 +62,7 @@ class ColumnModel {
       formula: map['formula'],
       textColor: map['text_color'],
       backgroundColor: map['background_color'],
+      isHidden: map['is_hidden'] == 1,
     );
   }
 }

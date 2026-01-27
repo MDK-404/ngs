@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:excel/excel.dart';
+import 'package:intl/intl.dart';
 import 'package:ngs_recordbook/features/forms/models/form_model.dart';
 import 'package:path/path.dart';
 
@@ -151,5 +152,45 @@ class ExcelService {
     if (cellValue is DateCellValue) return cellValue.asDateTimeLocal;
     // Fallback
     return cellValue.toString();
+  }
+
+  /// Exports data to an Excel file
+  static Future<List<int>?> exportToExcel({
+    required String sheetName,
+    required List<String> headers,
+    required List<List<dynamic>> data,
+  }) async {
+    try {
+      final excel = Excel.createExcel();
+      // Rename default sheet
+      final defaultSheet = excel.sheets.keys.first;
+      excel.rename(defaultSheet, sheetName);
+
+      final sheet = excel[sheetName];
+
+      // Add Headers
+      sheet.appendRow(headers.map((h) => TextCellValue(h)).toList());
+
+      // Add Data
+      for (final row in data) {
+        final excelRow = row.map<CellValue>((cell) {
+          if (cell == null) return TextCellValue('');
+          if (cell is num) {
+            return DoubleCellValue(cell.toDouble());
+          }
+          if (cell is DateTime) {
+            // Excel dates are sometimes tricky, string is safer for now unless needed
+            return TextCellValue(DateFormat('yyyy-MM-dd HH:mm').format(cell));
+          }
+          return TextCellValue(cell.toString());
+        }).toList();
+        sheet.appendRow(excelRow);
+      }
+
+      return excel.encode();
+    } catch (e) {
+      print('Error exporting Excel: $e');
+      return null;
+    }
   }
 }

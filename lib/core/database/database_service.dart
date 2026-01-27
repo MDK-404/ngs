@@ -32,7 +32,26 @@ class DatabaseService {
     }
     print('Opening database at: $path');
 
-    return await openDatabase(path, version: 1, onCreate: _onCreate);
+    return await openDatabase(
+      path,
+      version: 3,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  static Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+        'ALTER TABLE form_columns ADD COLUMN is_hidden INTEGER DEFAULT 0',
+      );
+    }
+    // Logic for existing purchase columns
+    if (oldVersion < 3) {
+      await db.execute(
+        "UPDATE form_columns SET is_hidden = 1 WHERE name LIKE '%purchase%'",
+      );
+    }
   }
 
   static Future _onCreate(Database db, int version) async {
@@ -65,6 +84,7 @@ class DatabaseService {
         name TEXT NOT NULL,
         type TEXT NOT NULL, -- TEXT, NUMBER, DATE, FORMULA
         formula TEXT,
+        is_hidden INTEGER DEFAULT 0,
         FOREIGN KEY (form_id) REFERENCES forms (id) ON DELETE CASCADE
       )
     ''');

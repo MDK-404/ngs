@@ -48,6 +48,7 @@ class RecordController extends GetxController {
       'name': col.name,
       'type': col.type.name,
       'formula': col.formula,
+      'is_hidden': col.isHidden ? 1 : 0,
     });
   }
 
@@ -71,6 +72,7 @@ class RecordController extends GetxController {
         'name': newCol.name,
         'type': newCol.type.name,
         'formula': newCol.formula,
+        'is_hidden': newCol.isHidden ? 1 : 0,
       },
       where: 'form_id = ? AND name = ?',
       whereArgs: [form.id, oldName],

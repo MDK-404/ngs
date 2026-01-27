@@ -50,11 +50,14 @@ class FormController extends GetxController {
       formId = await txn.insert('forms', {'name': name});
 
       for (var col in columns) {
+        final isHidden =
+            col.isHidden || col.name.toLowerCase().contains('purchase');
         await txn.insert('form_columns', {
           'form_id': formId,
           'name': col.name,
           'type': col.type.name,
           'formula': col.formula,
+          'is_hidden': isHidden ? 1 : 0,
         });
       }
     });
