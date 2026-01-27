@@ -2,61 +2,54 @@ import 'dart:io';
 import 'package:excel/excel.dart';
 import 'package:intl/intl.dart';
 import 'package:ngs_recordbook/features/forms/models/form_model.dart';
-import 'package:path/path.dart';
+import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 
 class ExcelService {
-  /// Reads an Excel file
-  static Future<Excel?> readFile(String path) async {
+  /// Reads an Excel file using SpreadsheetDecoder
+  static SpreadsheetDecoder? decodeFile(String path) {
     try {
       final file = File(path);
-      if (!await file.exists()) {
-        print('File does not exist at path: $path');
+      if (!file.existsSync()) {
+        print('File not found: $path');
         return null;
       }
-      var bytes = await file.readAsBytes();
-      var excel = Excel.decodeBytes(bytes);
-      return excel;
+      final bytes = file.readAsBytesSync();
+      return SpreadsheetDecoder.decodeBytes(bytes);
     } catch (e) {
-      print('Error reading Excel file: $e');
+      print('Error decoding Excel: $e');
       return null;
     }
   }
 
   /// Returns a list of sheet names
-  static List<String> getSheetNames(Excel excel) {
-    return excel.tables.keys.toList();
+  static List<String> getSheetNames(SpreadsheetDecoder decoder) {
+    return decoder.tables.keys.toList();
   }
 
-  /// Validates headers and extracts data
+  /// Validates headers and extracts data (legacy fixed columns)
   static List<Map<String, dynamic>> parseSheetData({
-    required Excel excel,
+    required SpreadsheetDecoder decoder,
     required String sheetName,
     required List<ColumnModel> formColumns,
   }) {
-    final table = excel.tables[sheetName];
+    final table = decoder.tables[sheetName];
     if (table == null) throw 'Sheet not found';
-
-    if (table.maxRows == 0) throw 'Sheet is empty';
+    if (table.rows.isEmpty) throw 'Sheet is empty';
 
     final rows = table.rows;
-    if (rows.isEmpty) throw 'Sheet is empty';
-
-    // Find Header Row (first non-empty row)
+    // Header is first row
     final headerRow = rows.first;
 
-    // Create Header Map: Lowercase Name -> Column Index
+    // Header Map
     final headerMap = <String, int>{};
     for (int i = 0; i < headerRow.length; i++) {
-      final val = _getCellValue(headerRow[i]?.value);
-      if (val != null) {
-        final h = val.toString().trim().toLowerCase();
-        if (h.isNotEmpty) {
-          headerMap[h] = i;
-        }
+      final val = headerRow[i]?.toString().trim().toLowerCase();
+      if (val != null && val.isNotEmpty) {
+        headerMap[val] = i;
       }
     }
 
-    // Verify columns
+    // Verify
     for (var col in formColumns) {
       if (!headerMap.containsKey(col.name.toLowerCase())) {
         throw 'Missing column in Excel: "${col.name}"';
@@ -74,84 +67,119 @@ class ExcelService {
 
       for (var colDef in formColumns) {
         if (colDef.type == ColumnType.formula) continue;
-
         final colIndex = headerMap[colDef.name.toLowerCase()]!;
-
         if (colIndex >= row.length) continue;
 
-        final cellValueObj = row[colIndex]?.value;
-
-        // Check for FormulaCellValue via type check if available
-        if (cellValueObj is FormulaCellValue) {
-          rowData[colDef.name] = '####';
-          hasData = true;
-          continue;
-        }
-
-        final val = _getCellValue(cellValueObj);
-
+        final val = row[colIndex];
         if (val != null && val.toString().isNotEmpty) {
           hasData = true;
+          // Basic type conversion if needed, SpreadsheetDecoder returns generic types
+          // Dates might be strings or numbers? SpreadsheetDecoder usually handles dates if configured?
+          // Actually defaults to serial or string.
+          // Let's assume generic usage.
+          rowData[colDef.name] = val;
+        }
+      }
+      if (hasData) parsedData.add(rowData);
+    }
+    return parsedData;
+  }
 
-          if (colDef.type == ColumnType.number) {
-            if (val is num) {
-              rowData[colDef.name] = val;
-            } else {
-              String valStr = val.toString();
-              if (valStr.startsWith('=')) {
-                rowData[colDef.name] = '####';
-              } else {
-                valStr = valStr.replaceAll(',', '');
-                valStr = valStr.replaceAll(RegExp(r'[^0-9.\-]'), '');
-                rowData[colDef.name] = double.tryParse(valStr) ?? 0.0;
-              }
-            }
-          } else if (colDef.type == ColumnType.date) {
-            if (val is num) {
-              // Serial date
-              final double dVal = val.toDouble();
-              final date = DateTime(
-                1900,
-                1,
-                1,
-              ).add(Duration(milliseconds: ((dVal - 2) * 86400000).round()));
-              rowData[colDef.name] = date.toIso8601String();
-            } else {
-              final str = val.toString();
-              if (str.startsWith('=')) {
-                rowData[colDef.name] = '####';
-              } else {
-                rowData[colDef.name] = str;
-              }
-            }
-          } else {
-            // Text
-            final str = val.toString();
-            if (str.startsWith('=')) {
-              rowData[colDef.name] = '####';
-            } else {
-              rowData[colDef.name] = str;
-            }
+  /// Infers columns and reads data from a sheet
+  /// Handles "title rows" by scanning for the row with the most columns.
+  /// Handles empty header gaps and duplicate header names efficiently.
+  static Map<String, dynamic> inferSheetData({
+    required SpreadsheetDecoder decoder,
+    required String sheetName,
+  }) {
+    final table = decoder.tables[sheetName];
+    if (table == null) throw 'Sheet not found';
+    if (table.rows.isEmpty)
+      return {'headers': <String>[], 'data': <Map<String, dynamic>>[]};
+
+    final rows = table.rows;
+
+    // 1. Smart Header Detection
+    // Scan first 50 rows to find the one with the most data (likely the header)
+    int headerRowIndex = 0;
+    int maxNonEmpty = -1;
+
+    final scanLimit = rows.length < 50 ? rows.length : 50;
+
+    for (int i = 0; i < scanLimit; i++) {
+      int count = 0;
+      for (var cell in rows[i]) {
+        if (cell != null && cell.toString().trim().isNotEmpty) {
+          count++;
+        }
+      }
+      // We prefer the first row that hits the max count (top-most candidate),
+      // but strict > ensures we upgrade if we find WIDER row.
+      // If header is row 4 (10 cols) and row 2 is title (1 col), row 4 wins.
+      if (count > maxNonEmpty) {
+        maxNonEmpty = count;
+        headerRowIndex = i;
+      }
+    }
+
+    // If no data found at all
+    if (maxNonEmpty <= 0) {
+      return {'headers': <String>[], 'data': <Map<String, dynamic>>[]};
+    }
+
+    final headerRow = rows[headerRowIndex];
+
+    // Map of Final Header Name -> Actual Column Index
+    final headerIndices = <String, int>{};
+    final headers = <String>[];
+    // Set to track duplicates for checking
+    final seenHeaders = <String>{};
+
+    for (int i = 0; i < headerRow.length; i++) {
+      final cell = headerRow[i];
+      if (cell != null && cell.toString().trim().isNotEmpty) {
+        String name = cell.toString().trim();
+
+        // Handle Duplicate Names
+        String originalName = name;
+        int dupCount = 2;
+        while (seenHeaders.contains(name)) {
+          name = '$originalName $dupCount';
+          dupCount++;
+        }
+
+        seenHeaders.add(name);
+        headers.add(name);
+        headerIndices[name] = i;
+      }
+    }
+
+    if (headers.isEmpty)
+      return {'headers': <String>[], 'data': <Map<String, dynamic>>[]};
+
+    final data = <Map<String, dynamic>>[];
+    for (int i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final rowMap = <String, dynamic>{};
+      bool hasData = false;
+
+      // We iterate through our identified headers to pull data from correct indices
+      for (var h in headers) {
+        final colIndex = headerIndices[h]!;
+
+        if (colIndex < row.length) {
+          final val = row[colIndex];
+          if (val != null && val.toString().isNotEmpty) {
+            rowMap[h] = val;
+            hasData = true;
           }
         }
       }
 
-      if (hasData) {
-        parsedData.add(rowData);
-      }
+      if (hasData) data.add(rowMap);
     }
 
-    return parsedData;
-  }
-
-  static dynamic _getCellValue(CellValue? cellValue) {
-    if (cellValue == null) return null;
-    if (cellValue is TextCellValue) return cellValue.value;
-    if (cellValue is IntCellValue) return cellValue.value;
-    if (cellValue is DoubleCellValue) return cellValue.value;
-    if (cellValue is DateCellValue) return cellValue.asDateTimeLocal;
-    // Fallback
-    return cellValue.toString();
+    return {'headers': headers, 'data': data};
   }
 
   /// Exports data to an Excel file

@@ -717,15 +717,15 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
     try {
       // 3. Read Excel
       _controller.isLoading.value = true;
-      final excel = await ExcelService.readFile(path);
+      final decoder = ExcelService.decodeFile(path);
       _controller.isLoading.value = false;
 
-      if (excel == null) {
+      if (decoder == null) {
         Get.snackbar('Error', 'Could not read Excel file');
         return;
       }
 
-      final sheets = ExcelService.getSheetNames(excel);
+      final sheets = ExcelService.getSheetNames(decoder);
       if (sheets.isEmpty) {
         Get.snackbar('Error', 'No sheets found');
         return;
@@ -759,7 +759,7 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
       List<Map<String, dynamic>> parsedData;
       try {
         parsedData = ExcelService.parseSheetData(
-          excel: excel,
+          decoder: decoder,
           sheetName: selectedSheet,
           formColumns: widget.form.columns,
         );

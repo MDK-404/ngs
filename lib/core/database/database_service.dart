@@ -34,7 +34,7 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -52,6 +52,19 @@ class DatabaseService {
         "UPDATE form_columns SET is_hidden = 1 WHERE name LIKE '%purchase%'",
       );
     }
+    // Collections Support
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE collections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      ''');
+      await db.execute('ALTER TABLE forms ADD COLUMN collection_id INTEGER');
+      // FK constraint not easily added via ALTER in SQLite, triggers usually needed, or just partial checking.
+      // SQLite ignores FKs by default unless enabled, so loose relationship is fine for now.
+    }
   }
 
   static Future _onCreate(Database db, int version) async {
@@ -67,12 +80,23 @@ class DatabaseService {
       )
     ''');
 
+    // Collections Table
+    await db.execute('''
+      CREATE TABLE collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    ''');
+
     // Forms Table
     await db.execute('''
       CREATE TABLE forms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        collection_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (collection_id) REFERENCES collections (id) ON DELETE CASCADE
       )
     ''');
 
