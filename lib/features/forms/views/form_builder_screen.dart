@@ -4,7 +4,8 @@ import '../controllers/form_controller.dart';
 import '../models/form_model.dart';
 
 class FormBuilderScreen extends StatefulWidget {
-  const FormBuilderScreen({super.key});
+  final int? collectionId;
+  const FormBuilderScreen({super.key, this.collectionId});
 
   @override
   State<FormBuilderScreen> createState() => _FormBuilderScreenState();
@@ -42,7 +43,11 @@ class _FormBuilderScreenState extends State<FormBuilderScreen> {
 
     try {
       print('Saving form: ${_nameController.text}');
-      await _formController.createForm(_nameController.text, _columns);
+      await _formController.createForm(
+        _nameController.text,
+        _columns,
+        collectionId: widget.collectionId,
+      );
       Get.back();
       Get.snackbar(
         'Success',
