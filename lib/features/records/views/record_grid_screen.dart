@@ -1760,10 +1760,12 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
                     );
 
                     if (colModel != null) {
-                      // Allow inline math for Number AND Formula columns
-                      if (colModel.type == ColumnType.number ||
-                          colModel.type == ColumnType.formula) {
-                        final input = event.value.toString();
+                      // Allow formulas in ANY column type if user starts with "="
+                      final input = event.value.toString();
+
+                      // Only evaluate if it starts with = or contains math operators
+                      if (input.startsWith('=') ||
+                          input.contains(RegExp(r'[+\-*/]'))) {
                         final evaluated = _controller.evaluateCellInput(
                           event.row,
                           colModel.name,
