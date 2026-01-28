@@ -95,7 +95,11 @@ class _RecordGridScreenState extends State<RecordGridScreen> {
             height: double.infinity,
             child: Text(
               displayValue!,
-              style: TextStyle(color: txtColor ?? Colors.black),
+              style: TextStyle(
+                color: txtColor ?? Colors.black,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
