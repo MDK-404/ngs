@@ -221,4 +221,62 @@ class ExcelService {
       return null;
     }
   }
+
+  /// Exports a collection with multiple sheets to an Excel file
+  /// Each form in the collection becomes a separate sheet
+  static Future<List<int>?> exportCollectionToExcel({
+    required String collectionName,
+    required Map<String, Map<String, dynamic>> sheetsData,
+  }) async {
+    try {
+      final excel = Excel.createExcel();
+
+      // Remove the default sheet at the end
+      String? defaultSheetName;
+
+      // Create a sheet for each form
+      for (var entry in sheetsData.entries) {
+        final sheetName = entry.key;
+        final sheetData = entry.value;
+        final headers = sheetData['headers'] as List<String>;
+        final data = sheetData['data'] as List<List<dynamic>>;
+
+        // Remember the first default sheet name to delete later
+        if (defaultSheetName == null) {
+          defaultSheetName = excel.sheets.keys.first;
+        }
+
+        // Create new sheet with the form name
+        final sheet = excel[sheetName];
+
+        // Add Headers
+        sheet.appendRow(headers.map((h) => TextCellValue(h)).toList());
+
+        // Add Data
+        for (final row in data) {
+          final excelRow = row.map<CellValue>((cell) {
+            if (cell == null) return TextCellValue('');
+            if (cell is num) {
+              return DoubleCellValue(cell.toDouble());
+            }
+            if (cell is DateTime) {
+              return TextCellValue(DateFormat('yyyy-MM-dd HH:mm').format(cell));
+            }
+            return TextCellValue(cell.toString());
+          }).toList();
+          sheet.appendRow(excelRow);
+        }
+      }
+
+      // Delete the default sheet if it still exists and we created other sheets
+      if (defaultSheetName != null && sheetsData.isNotEmpty) {
+        excel.delete(defaultSheetName);
+      }
+
+      return excel.encode();
+    } catch (e) {
+      print('Error exporting collection to Excel: $e');
+      return null;
+    }
+  }
 }
